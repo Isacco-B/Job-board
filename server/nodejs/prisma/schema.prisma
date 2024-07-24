@@ -1,0 +1,71 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model User {
+  id            String    @id @default(uuid())
+  profile       Profile?
+  jobs          Job[]
+  name          String
+  email         String    @unique
+  emailVerified DateTime?
+  password      String
+  createdAt     DateTime  @default(now())
+  updatedAr     DateTime  @updatedAt
+}
+
+model Profile {
+  id             String    @id @default(uuid())
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String    @unique
+  profilePicture String?
+  phoneNumber    Int?
+  dateOfBirth    DateTime?
+  gender         Gender
+  createdAt      DateTime  @default(now())
+  updatedAr      DateTime  @updatedAt
+}
+
+model Job {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @unique
+  title     String
+  location  String
+  remote    Boolean
+  salary    Int
+  createdAt DateTime @default(now())
+  updatedAr DateTime @updatedAt
+}
+
+model VerificationToken {
+  id      String   @id @default(cuid())
+  email   String
+  token   String  @unique
+  expires DateTime
+
+  @@unique([email, token])
+}
+
+model PasswordResetToken {
+  id      String   @id @default(cuid())
+  email   String
+  token   String  @unique
+  expires DateTime
+
+  @@unique([email, token])
+}
