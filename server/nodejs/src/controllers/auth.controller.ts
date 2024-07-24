@@ -3,13 +3,22 @@ import { prisma } from "../index";
 import { errorHandler } from "../middleware/errorHandler";
 import bcrypt from "bcryptjs";
 import jwt, { JwtPayload } from "jsonwebtoken";
-import { LoginSchema, RegisterSchema } from "../schemas";
-import { generatePasswordResetToken, generateVerificationToken } from "../utils/tokens";
+import {
+  LoginSchema,
+  NewPasswordSchema,
+  RegisterSchema,
+  ResetSchema,
+} from "../schemas";
+import {
+  generatePasswordResetToken,
+  generateVerificationToken,
+} from "../utils/tokens";
 import { sendVerificationEmail } from "../utils/emails/sendVerificationEmail";
 import { getUserByEmail, getUserById } from "../data/user";
-import { ACCESS_TOKEN_SECRET, REFRESH_TOKEN_SECRET } from "secrets";
-import { getVerificationTokenByToken } from "data/verificationToken";
-import { sendPasswordResetEmail } from "utils/emails/sendPasswordResetEmail";
+import { ACCESS_TOKEN_SECRET, REFRESH_TOKEN_SECRET } from "../secrets";
+import { getVerificationTokenByToken } from "../data/verificationToken";
+import { sendPasswordResetEmail } from "../utils/emails/sendPasswordResetEmail";
+import { getPasswordResetTokenByToken } from "../data/passwordResetToken";
 
 const REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[!@#$%]).{8,24}$/;
 
@@ -18,17 +27,17 @@ export async function register(
   res: Response,
   next: NextFunction
 ) {
+  const validatedFields = RegisterSchema.safeParse(req.body);
+
+  if (!validatedFields.success) {
+    return next(errorHandler(400, "Invalid fields!"));
+  }
+
+  const { name, email, password, confirmPassword } = validatedFields.data;
+
   try {
-    const validatedFields = RegisterSchema.safeParse(req.body);
-
-    if (!validatedFields.success) {
-      return next(errorHandler(400, "Invalid fields"));
-    }
-
-    const { name, email, password, confirmPassword } = validatedFields.data;
-
     if (password !== confirmPassword) {
-      return next(errorHandler(400, "Passwords do not match"));
+      return next(errorHandler(400, "Passwords do not match!"));
     }
 
     if (!REGEX.test(password)) {
@@ -58,15 +67,15 @@ export async function register(
 }
 
 export async function login(req: Request, res: Response, next: NextFunction) {
+  const validatedFields = LoginSchema.safeParse(req.body);
+
+  if (!validatedFields.success) {
+    return next(errorHandler(400, "Invalid fields!"));
+  }
+
+  const { email, password } = validatedFields.data;
+
   try {
-    const validatedFields = LoginSchema.safeParse(req.body);
-
-    if (!validatedFields.success) {
-      return next(errorHandler(400, "Invalid fields"));
-    }
-
-    const { email, password } = validatedFields.data;
-
     const existingUser = await getUserByEmail(email);
     if (!existingUser || !existingUser.email || !existingUser.password) {
       return next(errorHandler(400, "User not found"));
@@ -126,16 +135,16 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
 export async function refresh(req: Request, res: Response, next: NextFunction) {
   const refreshToken = req.cookies["jwt"];
   if (!refreshToken) {
-    return next(errorHandler(401, "Unauthorized"));
+    return next(errorHandler(401, "Unauthorized!"));
   }
   try {
     jwt.verify(
       refreshToken,
       REFRESH_TOKEN_SECRET,
       async (err: jwt.VerifyErrors, decoded: JwtPayload) => {
-        if (err) return next(errorHandler(403, "Forbidden"));
+        if (err) return next(errorHandler(403, "Forbidden!"));
         const user = await getUserById(decoded.id);
-        if (!user) return next(errorHandler(404, "User not found"));
+        if (!user) return next(errorHandler(404, "User not found!"));
         const accessToken = jwt.sign(
           {
             id: user.id,
@@ -153,22 +162,89 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
 }
 
 export async function reset(req: Request, res: Response, next: NextFunction) {
-  const { email } = req.body;
-  if (!email) return next(errorHandler(400, "Email is required!"));
+  const validatedFields = ResetSchema.safeParse(req.body);
+  if (!validatedFields.success) {
+    return next(errorHandler(400, "Invalid fields!"));
+  }
+  const { email } = validatedFields.data;
 
   try {
     const existingUser = await getUserByEmail(email);
     if (!existingUser) return next(errorHandler(404, "Email not found!"));
     const passwordResetToken = await generatePasswordResetToken(email);
-    await sendPasswordResetEmail(passwordResetToken.email, passwordResetToken.token);
+    await sendPasswordResetEmail(
+      passwordResetToken.email,
+      passwordResetToken.token
+    );
     return res.status(200).json({ message: "Reset email sent!" });
   } catch (error) {
-    next(error)
+    next(error);
   }
 }
 
-export async function newPassword(req: Request, res: Response, next: NextFunction) {
-  
+export async function newPassword(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const { token } = req.params;
+  if (!token) {
+    return next(errorHandler(400, "Missing token!"));
+  }
+  const validatedFields = NewPasswordSchema.safeParse(req.body);
+  if (!validatedFields.success) {
+    return next(errorHandler(400, "Invalid fields!"));
+  }
+  const { password, confirmPassword } = validatedFields.data;
+
+  try {
+    if (password !== confirmPassword) {
+      return next(errorHandler(400, "Passwords do not match!"));
+    }
+
+    if (!REGEX.test(password)) {
+      return next(
+        errorHandler(
+          400,
+          "Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character"
+        )
+      );
+    }
+
+    const existingToken = await getPasswordResetTokenByToken(token);
+    if (!existingToken) return next(errorHandler(400, "Invalid token!"));
+
+    const hasExpired = new Date(existingToken.expires) < new Date();
+    if (hasExpired) {
+      await prisma.passwordResetToken.delete({
+        where: {
+          id: existingToken.id,
+        },
+      });
+      return next(errorHandler(400, "Token has expired!"));
+    }
+
+    const existingUser = await getUserByEmail(existingToken.email);
+    if (!existingToken) return next(errorHandler(404, "User not found!"));
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await prisma.user.update({
+      where: {
+        id: existingUser.id,
+      },
+      data: {
+        password: hashedPassword,
+      },
+    });
+    await prisma.passwordResetToken.delete({
+      where: {
+        id: existingToken.id,
+      },
+    });
+    return res.status(200).json({ message: "Password reset successful!" });
+  } catch (error) {
+    next(error);
+  }
 }
 
 export async function newVerification(
@@ -176,15 +252,15 @@ export async function newVerification(
   res: Response,
   next: NextFunction
 ) {
-  const { token } = req.body;
+  const { token } = req.params;
 
   if (!token) {
-    return next(errorHandler(400, "Token is required"));
+    return next(errorHandler(400, "Missing token!"));
   }
 
   try {
     const existingToken = await getVerificationTokenByToken(token);
-    if (!existingToken) return next(errorHandler(404, "Token does not exist!"));
+    if (!existingToken) return next(errorHandler(400, "Invalid token!"));
 
     const hasExpired = new Date(existingToken.expires) < new Date();
 
